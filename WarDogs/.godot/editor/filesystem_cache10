@@ -1,0 +1,11 @@
+ea4bc82a6ad023ab7ee23ee620429895
+::res://::1761560782
+::res://scenes/::1754839292
+desktop_gritty.tscn::PackedScene::3678841284685332803::1754839292::0::1::::<><><>0<>0<><>::uid://bq4at7o410ff6::::res://scripts/desktop_gritty.gd<>uid://blbh5sih0bdn0::::res://scripts/button.gd
+::res://scripts/::1754839292
+button.gd::GDScript/GDScript::3161041892362266711::1754830055::0::1::::<>Button<><>0<>0<><>::
+desktop_gritty.gd::GDScript::3569344770581372773::1754839292::0::1::::<>Control<><>0<>0<><>::
+freemarket.gd::GDScript/GDScript::3154996253489840570::1754809258::0::1::::<>Control<><>0<>0<><>::
+::res://shaders/::1754836923
+crt.gdshader::Shader/Shader::4273293781659616136::1754836923::0::1::::<><><>0<>0<><>::
+crt_fullscreen.gdshader::Shader/Shader::4579551023515247175::1754806946::0::1::::<><><>0<>0<><>::
