@@ -31,7 +31,7 @@ func _ready() -> void:
 	randomize()
 	purchase_confirmation_panel.hide()
 	item_list.icon_mode = ItemList.ICON_MODE_TOP
-	item_list.fixed_column_width = 300
+	item_list.fixed_column_width = item_list_width
 
 	# Using 'call_deferred' to ensure this runs after the autoload scripts are fully ready.
 	call_deferred("populate_initial_market")
@@ -56,61 +56,73 @@ func populate_initial_market():
 
 
 func generate_new_sell_order() -> void:
-	if item_list.get_item_count() >= max_market_items: return
-	if Products.ALL_PRODUCTS.is_empty(): return
+	if item_list.get_item_count() >= max_market_items:
+		return
+	if Products.ALL_PRODUCTS.is_empty() or Sellers.ALL_SELLERS.is_empty():
+		return
 
-	var seller = Sellers.ALL_SELLERS.pick_random()
-	var eligible_products: Array = []
-	for product in Products.ALL_PRODUCTS:
-		if not product.has("type") or not product.has("manufacturer"): continue
-		var type_ok := seller.allowed_types.is_empty() or product.type in seller.allowed_types
-		var mfg_ok := seller.allowed_manufacturers.is_empty() or product.manufacturer in seller.allowed_manufacturers
+	var seller: Dictionary = Sellers.ALL_SELLERS.pick_random()
+	var eligible_products: Array[Dictionary] = []
+	for product_data: Dictionary in Products.ALL_PRODUCTS:
+		if not product_data.has("type") or not product_data.has("manufacturer"):
+			continue
+		var type_id := int(product_data.get("type", 0))
+		var manufacturer_id := int(product_data.get("manufacturer", 0))
+		var type_ok := seller.get("allowed_types", []).is_empty() or type_id in seller.get("allowed_types", [])
+		var mfg_ok := seller.get("allowed_manufacturers", []).is_empty() or manufacturer_id in seller.get("allowed_manufacturers", [])
 		if type_ok and mfg_ok:
-			eligible_products.append(product)
-	if eligible_products.is_empty(): return
+			eligible_products.append(product_data)
+	if eligible_products.is_empty():
+		return
 
-	var product_to_sell = eligible_products.pick_random()
+	var product_to_sell: Dictionary = eligible_products.pick_random()
 	var quantity := randi_range(1, 5)
 	var price_modifier := randf_range(0.85, 1.15)
-	var price_per_unit := int(product_to_sell.base_price * price_modifier)
+	var base_price := float(product_to_sell.get("base_price", 0))
+	var price_per_unit := int(round(base_price * price_modifier))
 	var now := Time.get_unix_time_from_system()
-	
+
 	# Dynamic TTL: better (cheaper) deals disappear faster.
-	var discount := clamp((product_to_sell.base_price - float(price_per_unit)) / max(1.0, float(product_to_sell.base_price)), 0.0, 1.0)
+	var discount := clamp((base_price - float(price_per_unit)) / max(1.0, base_price), 0.0, 1.0)
 	var ttl := int(lerpf(float(max_ttl_seconds), float(min_ttl_seconds), discount))
 	var expiration_timestamp := now + ttl
-	
+
 	# Probability the listing will be "bought" vs "cancelled" on expiration
 	var buy_prob := lerpf(0.30, 0.90, discount)
 
 	var sell_order := {
-		"seller_name": seller.name,
-		"product_name": product_to_sell.name,
+		"seller_name": seller.get("name", "Anonymous Seller"),
+		"product_name": product_to_sell.get("name", "Unknown Product"),
 		"quantity": quantity,
 		"price_per_unit": price_per_unit,
 		"created_at": now,
 		"expires_at": expiration_timestamp,
 		"buy_prob": buy_prob,
-		"original_product_data": product_to_sell
+		"original_product_data": product_to_sell.duplicate(true)
 	}
 	add_order_to_list(sell_order)
 
 
 func _format_display_text(order_data: Dictionary) -> String:
+	var seller_name := String(order_data.get("seller_name", "Unknown"))
+	var product_name := String(order_data.get("product_name", ""))
+	var quantity := int(order_data.get("quantity", 0))
+	var price := int(order_data.get("price_per_unit", 0))
+
 	var eta_text := ""
 	if order_data.has("expires_at"):
-		var remaining := int(order_data.expires_at - Time.get_unix_time_from_system())
+		var remaining := int(order_data.get("expires_at", 0) - Time.get_unix_time_from_system())
 		if remaining < 0:
 			eta_text = " (expired)"
 		else:
 			var mins := int(ceil(remaining / 60.0))
 			eta_text = "  ⏳ %dm" % mins
-	return "%s
-%s (x%d) | $%d each%s" % [
-		order_data.seller_name,
-		order_data.product_name,
-		order_data.quantity,
-		order_data.price_per_unit,
+
+	return "%s — %s (x%d) | $%d each%s" % [
+		seller_name,
+		product_name,
+		quantity,
+		price,
 		eta_text
 	]
 
@@ -118,7 +130,7 @@ func _format_display_text(order_data: Dictionary) -> String:
 func add_order_to_list(order_data: Dictionary) -> void:
 	var display_text := _format_display_text(order_data)
 	var new_index := item_list.add_item(display_text)
-	item_list.set_item_metadata(new_index, order_data)
+	item_list.set_item_metadata(new_index, order_data.duplicate(true))
 	item_list.move_item(new_index, 0)
 
 
@@ -126,26 +138,35 @@ func _process(_delta: float) -> void:
 	var current_time := Time.get_unix_time_from_system()
 	# Update visible rows text with live countdown
 	for i in range(item_list.get_item_count()):
-		var meta := item_list.get_item_metadata(i)
-		if meta:
-			item_list.set_item_text(i, _format_display_text(meta))
+		var meta: Dictionary = item_list.get_item_metadata(i)
+		if meta.is_empty():
+			continue
+		item_list.set_item_text(i, _format_display_text(meta))
 	
 	# Remove expired and report outcome
 	for i in range(item_list.get_item_count() - 1, -1, -1):
-		var metadata := item_list.get_item_metadata(i)
-		if metadata and metadata.has("expires_at") and current_time > int(metadata.expires_at):
-			var was_selected_item := (_current_selection and _current_selection.index == i)
-			# Decide outcome
-			var bought := randf() < (metadata.has("buy_prob") ? float(metadata.buy_prob) : 0.5)
-			if bought:
-				print("[MARKET] Bought: %s x%d @ $%d" % [metadata.product_name, int(metadata.quantity), int(metadata.price_per_unit)])
-			else:
-				print("[MARKET] Cancelled: %s listing expired" % [metadata.product_name])
-			item_list.remove_item(i)
-			if was_selected_item:
-				_on_cancel_pressed()
-			elif _current_selection and i < _current_selection.index:
-				_current_selection.index -= 1
+		var metadata: Dictionary = item_list.get_item_metadata(i)
+		if metadata.is_empty() or not metadata.has("expires_at"):
+			continue
+		if current_time <= int(metadata.get("expires_at", 0)):
+			continue
+
+		var was_selected_item := (_current_selection and _current_selection.index == i)
+		# Decide outcome
+		var bought := randf() < float(metadata.get("buy_prob", 0.5))
+		var log_name := String(metadata.get("product_name", "Lot"))
+		if bought:
+			var qty := int(metadata.get("quantity", 0))
+			var unit_price := int(metadata.get("price_per_unit", 0))
+			print("[MARKET] Bought: %s x%d @ $%d" % [log_name, qty, unit_price])
+		else:
+			print("[MARKET] Cancelled: %s listing expired" % log_name)
+
+		item_list.remove_item(i)
+		if was_selected_item:
+			_on_cancel_pressed()
+		elif _current_selection and i < _current_selection.index:
+			_current_selection.index -= 1
 
 
 func _format_seconds_to_string(total_seconds: int) -> String:
@@ -160,46 +181,59 @@ func _format_seconds_to_string(total_seconds: int) -> String:
 
 func _on_item_list_item_selected(index: int) -> void:
 	item_list.deselect(index)
-	var order_data = item_list.get_item_metadata(index)
-	if not order_data: return
-	
-	_current_selection = { "data": order_data, "index": index }
-	
+	var order_data: Dictionary = item_list.get_item_metadata(index)
+	if order_data.is_empty():
+		return
+
+	_current_selection = { "data": order_data.duplicate(true), "index": index }
+
 	# --- UPDATED DYNAMIC DISPLAY ---
 	var details_string = ""
-	var product_info = order_data.original_product_data
-	
+	var product_info: Dictionary = order_data.get("original_product_data", {})
+
 	# Define the specific list of keys you want to display, in order.
 	var keys_to_display = [
-		"equipment_code", "name", "type", "ammo_type", 
+		"equipment_code", "name", "type", "manufacturer", "ammo_type",
 		"country_of_origin", "estimated_production_numbers", "currently_being_produced"
 	]
-	
+
 	# Add the fixed order details first.
-	details_string += "Seller: %s\n" % order_data.seller_name
-	details_string += "Available: %d\n" % order_data.quantity
-	details_string += "Price: $%d / unit\n" % order_data.price_per_unit
-	var seconds_remaining = order_data.expires_at - Time.get_unix_time_from_system()
+	details_string += "Seller: %s\n" % order_data.get("seller_name", "Unknown")
+	details_string += "Available: %d\n" % int(order_data.get("quantity", 0))
+	details_string += "Price: $%d / unit\n" % int(order_data.get("price_per_unit", 0))
+	var seconds_remaining := int(order_data.get("expires_at", Time.get_unix_time_from_system()) - Time.get_unix_time_from_system())
 	details_string += "Time Left: %s\n\n" % _format_seconds_to_string(seconds_remaining)
-	
+
 	details_string += "--- Item Specs ---\n"
 	# Now, loop through your specific list of keys.
 	for key in keys_to_display:
 		if product_info.has(key): # Check if the key exists in the data
 			var value = product_info[key]
 			# If the value is an enum, we need its string name.
-			if key == "type": value = Products.EquipmentType.find_key(value).replace("_", " ")
-			if key == "manufacturer": value = Products.Manufacturer.find_key(value).replace("_", " ")
-			
+                        if key == "type":
+                                var type_key := Products.EquipmentType.find_key(int(value))
+                                if type_key:
+                                        value = String(type_key).replace("_", " ")
+                                else:
+                                        value = String(value)
+                        elif key == "manufacturer":
+                                var mfg_key := Products.Manufacturer.find_key(int(value))
+                                if mfg_key:
+                                        value = String(mfg_key).replace("_", " ")
+                                else:
+                                        value = String(value)
+
+			if value is bool:
+				value = value ? "Yes" : "No"
 			var formatted_key = key.replace("_", " ").capitalize()
 			details_string += "%s: %s\n" % [formatted_key, value]
 
 	detail_label.text = details_string
 
 	quantity_spinbox.min_value = 1
-	quantity_spinbox.max_value = order_data.quantity
+	quantity_spinbox.max_value = max(1, int(order_data.get("quantity", 1)))
 	quantity_spinbox.value = 1
-	
+
 	purchase_confirmation_panel.show()
 
 
@@ -215,25 +249,26 @@ func _on_new_order_timer_timeout() -> void:
 
 func _on_buy_all_pressed() -> void:
 	if not _current_selection: return
-	var order_data = _current_selection.data
-	var index = _current_selection.index
-	print("Attempting to buy ALL: %d of %s" % [order_data.quantity, order_data.product_name])
+	var order_data: Dictionary = _current_selection.data
+	var index: int = _current_selection.index
+	print("Attempting to buy ALL: %d of %s" % [int(order_data.get("quantity", 0)), order_data.get("product_name", "Unknown")])
 	item_list.remove_item(index)
 	_on_cancel_pressed()
 
 
 func _on_buy_partial_pressed() -> void:
 	if not _current_selection: return
-	var order_data = _current_selection.data
-	var index = _current_selection.index
-	var quantity_to_buy = int(quantity_spinbox.value)
-	print("Attempting to buy PARTIAL: %d of %s" % [quantity_to_buy, order_data.product_name])
-	var new_quantity = order_data.quantity - quantity_to_buy
+	var order_data: Dictionary = _current_selection.data
+	var index: int = _current_selection.index
+	var quantity_to_buy := int(quantity_spinbox.value)
+	print("Attempting to buy PARTIAL: %d of %s" % [quantity_to_buy, order_data.get("product_name", "Unknown")])
+	var new_quantity := int(order_data.get("quantity", 0)) - quantity_to_buy
 	if new_quantity <= 0:
 		item_list.remove_item(index)
 	else:
-		var updated_order_data = order_data.duplicate()
-		updated_order_data.quantity = new_quantity
+		var updated_order_data: Dictionary = order_data.duplicate(true)
+		updated_order_data["quantity"] = new_quantity
 		item_list.set_item_text(index, _format_display_text(updated_order_data))
 		item_list.set_item_metadata(index, updated_order_data)
+		_current_selection = { "data": updated_order_data, "index": index }
 	_on_cancel_pressed()

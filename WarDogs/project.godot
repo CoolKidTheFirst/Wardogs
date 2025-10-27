@@ -14,6 +14,11 @@ config/name="War Dogs (AI) v1"
 run/main_scene="res://scenes/desktop_gritty.tscn"
 config/features=PackedStringArray("4.4")
 
+[autoload]
+
+Products="*res://scripts/products.gd"
+Sellers="*res://scripts/sellers.gd"
+
 [rendering]
 
 environment/defaults/default_clear_color=Color(0, 0, 0, 1)
